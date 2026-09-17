@@ -1,3 +1,5 @@
+import json
+from pathlib import Path
 import re
 
 import pandas as pd
@@ -7,8 +9,9 @@ import pandas as pd
 # File paths
 # ============================================================
 
-INPUT_PATH = "data/processed/cleaned_automotive_news.csv"
-OUTPUT_PATH = "data/processed/classified_automotive_news.csv"
+ROOT = Path(__file__).resolve().parents[2]
+INPUT_PATH = ROOT / "data/processed/cleaned_automotive_news.csv"
+OUTPUT_PATH = ROOT / "data/processed/classified_automotive_news.csv"
 
 
 # ============================================================
@@ -433,7 +436,8 @@ def keyword_matches(text, keyword):
 
 def score_labels(text, keyword_dict):
     """
-    Calculate a keyword-match score for every possible label.
+    Count keyword matches for every label. Counts are not probabilities or
+    confidence scores; overlapping keywords and repeated text can add matches.
     """
     normalized_text = normalize_text(text)
 
@@ -459,7 +463,8 @@ def get_primary_label(text, keyword_dict):
     """
     Return the label with the highest keyword score.
 
-    If no label has any evidence, return 'Other'.
+    Ties use the declared dictionary order (first wins), never randomness.
+    If no label has evidence, return 'Other', a review fallback, not a brand/topic.
     """
     scores = score_labels(
         text,
@@ -501,208 +506,31 @@ def find_labels(text, keyword_dict):
 
 
 def join_labels(labels):
-    """
-    Convert detected labels into a comma-separated string.
-    """
-    if not labels:
-        return "Other"
-
-    return ", ".join(labels)
+    """JSON arrays preserve labels containing commas; [] means no match."""
+    return json.dumps(labels, ensure_ascii=False)
 
 
-# ============================================================
-# Article classification pipeline
-# ============================================================
-
-def classify_articles():
-    """
-    Load cleaned automotive news and enrich every article
-    with brand and topic classifications.
-    """
-    df = pd.read_csv(
-        INPUT_PATH
-    )
-
-    required_columns = {
-        "title",
-        "summary",
-    }
-
-    missing_columns = (
-        required_columns
-        - set(df.columns)
-    )
-
-    if missing_columns:
-        raise ValueError(
-            "Missing required columns: "
-            + ", ".join(
-                sorted(missing_columns)
-            )
-        )
-
-    # Combine title and summary for classification
-    df["combined_text"] = (
-        df["title"].fillna("")
-        + " "
-        + df["summary"].fillna("")
-    )
-
-    # --------------------------------------------------------
-    # Primary brand
-    # --------------------------------------------------------
-
-    df["primary_brand"] = (
-        df["combined_text"]
-        .apply(
-            lambda text: get_primary_label(
-                text,
-                BRAND_KEYWORDS
-            )
-        )
-    )
-
-    # --------------------------------------------------------
-    # Primary topic
-    # --------------------------------------------------------
-
-    df["primary_topic"] = (
-        df["combined_text"]
-        .apply(
-            lambda text: get_primary_label(
-                text,
-                TOPIC_KEYWORDS
-            )
-        )
-    )
-
-    # --------------------------------------------------------
-    # All detected brands
-    # --------------------------------------------------------
-
-    df["brand"] = (
-        df["combined_text"]
-        .apply(
-            lambda text: join_labels(
-                find_labels(
-                    text,
-                    BRAND_KEYWORDS
-                )
-            )
-        )
-    )
-
-    # --------------------------------------------------------
-    # All detected topics
-    # --------------------------------------------------------
-
-    df["topic"] = (
-        df["combined_text"]
-        .apply(
-            lambda text: join_labels(
-                find_labels(
-                    text,
-                    TOPIC_KEYWORDS
-                )
-            )
-        )
-    )
-
-    # Temporary column no longer needed
-    df = df.drop(
-        columns=[
-            "combined_text"
-        ]
-    )
-
-    # Save classified dataset
-    df.to_csv(
-        OUTPUT_PATH,
-        index=False
-    )
-
+def classify_dataframe(df):
+    missing = {"title", "summary"} - set(df.columns)
+    if missing:
+        raise ValueError(f"Missing required columns: {', '.join(sorted(missing))}")
+    df = df.copy()
+    text = df["title"].fillna("").astype(str) + " " + df["summary"].fillna("").astype(str)
+    for kind, taxonomy in (("brand", BRAND_KEYWORDS), ("topic", TOPIC_KEYWORDS)):
+        df[f"primary_{kind}"] = text.apply(lambda value: get_primary_label(value, taxonomy))
+        df[kind] = text.apply(lambda value: join_labels(find_labels(value, taxonomy)))
     return df
 
 
-# ============================================================
-# Run directly
-# ============================================================
+def classify_articles(input_path=INPUT_PATH, output_path=OUTPUT_PATH):
+    df = classify_dataframe(pd.read_csv(input_path, encoding="utf-8"))
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(output_path, index=False, encoding="utf-8", lineterminator="\n")
+    print(f"Classified {len(df)} records -> {output_path}")
+    return df
+
 
 if __name__ == "__main__":
-
-    classified_df = classify_articles()
-
-    print(
-        f"Classified dataset saved to: "
-        f"{OUTPUT_PATH}"
-    )
-
-    print(
-        f"Rows: {len(classified_df)}"
-    )
-
-    # --------------------------------------------------------
-    # Topic distribution
-    # --------------------------------------------------------
-
-    print(
-        "\nPrimary-topic distribution:"
-    )
-
-    topic_distribution = (
-        classified_df[
-            "primary_topic"
-        ]
-        .value_counts()
-    )
-
-    print(
-        topic_distribution
-    )
-
-    # --------------------------------------------------------
-    # Other percentage
-    # --------------------------------------------------------
-
-    other_count = (
-        classified_df[
-            "primary_topic"
-        ]
-        .eq("Other")
-        .sum()
-    )
-
-    if len(classified_df) > 0:
-        other_share = (
-            other_count
-            / len(classified_df)
-            * 100
-        )
-    else:
-        other_share = 0
-
-    print(
-        f"\nOther articles: "
-        f"{other_count} "
-        f"({other_share:.1f}%)"
-    )
-
-    # --------------------------------------------------------
-    # Preview
-    # --------------------------------------------------------
-
-    print(
-        "\nPreview:"
-    )
-
-    print(
-        classified_df[
-            [
-                "title",
-                "primary_brand",
-                "primary_topic",
-                "brand",
-                "topic",
-            ]
-        ].head()
-    )
+    result = classify_articles()
+    print(result["primary_brand"].value_counts().to_string())
+    print(result["primary_topic"].value_counts().to_string())

@@ -1,8 +1,13 @@
+"""Optional live RSS collection. Default output never replaces the audited snapshot."""
+import argparse
+from datetime import datetime, timezone
+from pathlib import Path
+
 import feedparser
 import pandas as pd
 import requests
-from datetime import datetime
 
+ROOT = Path(__file__).resolve().parents[2]
 
 RSS_FEEDS = {
     "BYD News": "https://news.google.com/rss/search?q=BYD%20electric%20vehicle&hl=en-US&gl=US&ceid=US:en",
@@ -16,46 +21,62 @@ RSS_FEEDS = {
 
 
 def fetch_feed(feed_url):
-    response = requests.get(
-        feed_url,
-        headers={"User-Agent": "Mozilla/5.0"},
-        timeout=15,
-        verify=False,
-    )
-    response.raise_for_status()
-    return feedparser.parse(response.content)
+    response = requests.get(feed_url, headers={"User-Agent": "AutomotiveNewsWorkflow/1.0"}, timeout=15)
+    response.raise_for_status()  # requests performs normal TLS certificate validation.
+    feed = feedparser.parse(response.content)
+    if feed.get("bozo") or not feed.entries:
+        raise ValueError("Malformed or empty feed; snapshot not safe to replace")
+    return feed
 
 
 def collect_news():
-    articles = []
-
+    articles, failures = [], []
     for source, feed_url in RSS_FEEDS.items():
         try:
             feed = fetch_feed(feed_url)
-            print(source, len(feed.entries))
-
+            collected_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
             for entry in feed.entries:
+                publisher = entry.get("source", {})
                 articles.append({
-                    "source": source,
+                    "source": source,  # query/feed name, not publisher
+                    "feed_url": feed_url,
+                    "publisher": publisher.get("title", ""),
+                    "publisher_url": publisher.get("href", ""),  # source website, not article URL
                     "title": entry.get("title", ""),
                     "link": entry.get("link", ""),
                     "published": entry.get("published", ""),
                     "summary": entry.get("summary", ""),
-                    "collected_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "collected_at": collected_at,
                 })
-
-        except Exception as error:
-            print(f"Error collecting {source}: {error}")
-
+            print(f"{source}: {len(feed.entries)} records")
+        except (requests.RequestException, ValueError) as error:
+            failures.append(source)
+            print(f"Feed failed: {source}: {error}")
+    if failures:
+        raise RuntimeError(f"Collection incomplete ({len(failures)}/{len(RSS_FEEDS)} feeds failed). No output saved.")
     return pd.DataFrame(articles)
 
 
-if __name__ == "__main__":
-    df = collect_news()
-
+def save_collection(output_path, overwrite=False):
+    output_path = Path(output_path)
+    if not output_path.is_absolute():
+        output_path = ROOT / output_path
+    if output_path.resolve() == (ROOT / "data/raw/automotive_news.csv").resolve():
+        raise ValueError("The bundled historical snapshot is protected. Choose a different output path.")
+    if output_path.exists() and not overwrite:
+        raise FileExistsError(f"{output_path} exists; select a new path or explicitly use --overwrite")
+    df = collect_news()  # Any feed failure prevents writing, including partial data.
     if df.empty:
-        print("No articles collected. Existing CSV was not overwritten.")
-    else:
-        df.to_csv("data/raw/automotive_news.csv", index=False)
-        print(f"Collected {len(df)} articles.")
-        print(df.head())
+        raise ValueError("No records collected; no output saved")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(output_path, index=False, encoding="utf-8", lineterminator="\n")
+    print(f"Saved {len(df)} records to {output_path}. Offline artifacts were not changed.")
+    return df
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, default=ROOT / "data/raw/live/automotive_news.csv")
+    parser.add_argument("--overwrite", action="store_true", help="Allow replacing a separate live output, never the bundled snapshot")
+    args = parser.parse_args()
+    save_collection(args.output, args.overwrite)

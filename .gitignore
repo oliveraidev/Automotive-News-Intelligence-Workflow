@@ -19,3 +19,13 @@ __pycache__/
 
 # Pytest
 .pytest_cache/
+
+# Local planning documents (not current product documentation)
+/AI Automotive Market Intelligence Agent.docx
+/notes ai chinese automotive project 6.docx
+
+# Optional live collection and local QC outputs
+/data/raw/live/
+/.cache/
+/.audit/
+.env.*

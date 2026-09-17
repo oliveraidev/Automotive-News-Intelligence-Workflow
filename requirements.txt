@@ -1,8 +1,6 @@
-streamlit
-pandas
-plotly
-feedparser
-textblob
-requests
-beautifulsoup4
-lxml
+pandas==3.0.2
+streamlit==1.58.0
+plotly==7.0.0
+feedparser==6.0.14
+textblob==0.20.1
+requests==2.34.2
