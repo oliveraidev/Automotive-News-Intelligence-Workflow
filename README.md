@@ -123,7 +123,7 @@ Screenshots show the regenerated bundled snapshot. The record-review screenshot 
 
 Tested with **Python 3.14.4** and the direct dependency versions pinned in `requirements.txt`. Tests use standard-library `unittest` and Streamlit AppTest; no separate test dependency is needed. Transitive dependencies are resolved by pip rather than a cross-platform lockfile.
 
-From the existing repository root (its folder/remote name has not yet been renamed):
+From the repository root (the local folder may still have its original name):
 
 ```bash
 python3 -m venv .venv
